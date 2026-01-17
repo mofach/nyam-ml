@@ -1,0 +1,7 @@
+Flask==3.0.0
+gunicorn==21.2.0
+numpy==1.26.2
+opencv-python-headless==4.8.1.78
+tensorflow-cpu==2.15.0
+google-cloud-storage==2.13.0
+python-dotenv==1.0.0

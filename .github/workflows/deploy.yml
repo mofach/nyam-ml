@@ -9,7 +9,7 @@ env:
   PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
   REGION: asia-southeast2
   REPO_NAME: nyam-repo
-  SERVICE_NAME: nyam-ml-api # Nama service di Cloud Run
+  SERVICE_NAME: nyam-ml-api
 
 jobs:
   deploy:
@@ -35,21 +35,24 @@ jobs:
       - name: Docker Auth
         run: gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev
 
-      # Build & Push
       - name: Build and Push
         run: |
           docker build -t ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPO_NAME }}/${{ env.SERVICE_NAME }}:${{ github.sha }} .
           docker push ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPO_NAME }}/${{ env.SERVICE_NAME }}:${{ github.sha }}
 
-      # Deploy
-      # GANTI 'nama-bucket-kamu' dan nama file model di bawah ini!
       - name: Deploy to Cloud Run
         uses: google-github-actions/deploy-cloudrun@v2
         with:
           service: ${{ env.SERVICE_NAME }}
           region: ${{ env.REGION }}
           image: ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPO_NAME }}/${{ env.SERVICE_NAME }}:${{ github.sha }}
-          flags: "--allow-unauthenticated --memory=2Gi --cpu=1"
+          flags: |
+            --allow-unauthenticated
+            --memory=4Gi
+            --cpu=2
+            --timeout=300
+            --max-instances=10
+            --min-instances=0
           env_vars: |
             GCS_BUCKET_NAME=nyam-models-prod
             FOOD_MODEL_BLOB_NAME=modelML_foodRecognition.keras

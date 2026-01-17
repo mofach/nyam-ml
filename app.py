@@ -10,15 +10,15 @@ from tensorflow.keras.models import load_model
 from google.cloud import storage
 from dotenv import load_dotenv
 
-# Setup Logging biar error kelihatan di Cloud Run Logs
+# Setup Logging (Biar kelihatan di Cloud Run)
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Load .env (Hanya ngefek di local, di Cloud Run dilewati)
+# Load .env (Cuma ngefek di laptop, server bakal skip ini)
 load_dotenv()
 
-# --- HAPUS BAGIAN OS.ENVIRON CREDENTIALS ---
-# Cloud Run otomatis handle auth, tidak perlu set manual!
+# --- BAGIAN INI SAYA HAPUS BIAR GAK CRASH DI SERVER ---
+# os.environ['GOOGLE_APPLICATION_CREDENTIALS'] = ... (HAPUS)
 
 # Konfigurasi Env
 GCS_BUCKET_NAME = os.getenv("GCS_BUCKET_NAME")
@@ -30,60 +30,55 @@ app = Flask(__name__)
 
 # Direktori Sementara
 temp_dir = tempfile.gettempdir()
-LOCAL_FOOD_MODEL_PATH = os.path.join(temp_dir, 'food_model.keras')
-LOCAL_BMR_MODEL_PATH = os.path.join(temp_dir, 'bmr_model.keras')
+LOCAL_FOOD_MODEL_PATH = os.path.join(temp_dir, FOOD_MODEL_BLOB_NAME)
+LOCAL_BMR_MODEL_PATH = os.path.join(temp_dir, BMR_MODEL_BLOB_NAME)
 
 # Variable Global
 food_model = None
 bmr_model = None
+
 classes = [
     "ayam", "broccoli", "ikan", "kambing", "cauliflower", "potato", "cabbage", "pumpkin", 
     "cucumber", "paprika", "sapi", "tofu", "telur", "tempeh", "tomato", "udang", "carrot"
 ]
 
-def download_and_load(bucket_name, blob_name, local_path):
-    """Fungsi download yang aman dengan logging jelas"""
+# ===========================
+# Fungsi Download
+# ===========================
+def download_model_from_gcs(bucket_name, source_blob_name, destination_file_name):
     try:
-        logger.info(f"⬇️ Downloading {blob_name} from {bucket_name}...")
-        storage_client = storage.Client() # Otomatis pakai Auth Cloud Run
+        logger.info(f"⬇️ Downloading {source_blob_name}...")
+        # Di Cloud Run otomatis pakai Auth Server, gak perlu creds manual
+        storage_client = storage.Client() 
         bucket = storage_client.bucket(bucket_name)
-        blob = bucket.blob(blob_name)
-        
-        if not blob.exists():
-            logger.error(f"❌ File {blob_name} TIDAK ADA di bucket {bucket_name}")
-            return None
-
-        blob.download_to_filename(local_path)
-        logger.info(f"✅ Downloaded to: {local_path}")
-        
-        # Load Model
-        model = load_model(local_path)
-        logger.info(f"🧠 Model Loaded: {blob_name}")
-        return model
+        blob = bucket.blob(source_blob_name)
+        blob.download_to_filename(destination_file_name)
+        logger.info(f"✅ Downloaded to {destination_file_name}")
+        return True
     except Exception as e:
-        logger.error(f"🔥 Error loading {blob_name}: {e}")
-        return None
+        logger.error(f"🔥 Error downloading {source_blob_name}: {e}")
+        return False
 
-# --- Load Model saat Startup ---
-logger.info("⏳ Starting Model Download...")
+# Load models at startup
+try:
+    dl_food = download_model_from_gcs(GCS_BUCKET_NAME, FOOD_MODEL_BLOB_NAME, LOCAL_FOOD_MODEL_PATH)
+    dl_bmr = download_model_from_gcs(GCS_BUCKET_NAME, BMR_MODEL_BLOB_NAME, LOCAL_BMR_MODEL_PATH)
+    
+    if dl_food:
+        food_model = load_model(LOCAL_FOOD_MODEL_PATH)
+        logger.info("🧠 Food Model Loaded")
+        
+    if dl_bmr:
+        bmr_model = load_model(LOCAL_BMR_MODEL_PATH)
+        logger.info("🧠 BMR Model Loaded")
+        
+except Exception as e:
+    logger.critical(f"🔥 FATAL STARTUP ERROR: {str(e)}")
 
-# Cek apakah Env Var terbaca
-if not GCS_BUCKET_NAME:
-    logger.critical("⚠️ GCS_BUCKET_NAME is not set! Check deploy.yml")
-
-# Download Food Model
-food_model = download_and_load(GCS_BUCKET_NAME, FOOD_MODEL_BLOB_NAME, LOCAL_FOOD_MODEL_PATH)
-
-# Download BMR Model
-bmr_model = download_and_load(GCS_BUCKET_NAME, BMR_MODEL_BLOB_NAME, LOCAL_BMR_MODEL_PATH)
-
-if food_model and bmr_model:
-    logger.info("🚀 SYSTEM READY: All models loaded.")
-else:
-    logger.warning("⚠️ SYSTEM PARTIAL: Some models failed to load.")
-
-# --- Helper Functions ---
-def preprocess_image(file_stream):
+# ===========================
+# Helper Functions (Sama Persis Punya Kamu)
+# ===========================
+def ImagePreprocess1(file_stream):
     file_stream.seek(0)
     file_bytes = np.frombuffer(file_stream.read(), np.uint8)
     image = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
@@ -92,63 +87,70 @@ def preprocess_image(file_stream):
     kernel = np.array([[0, -1, 0], [-1, 5, -1], [0, -1, 0]])
     return cv2.filter2D(img_resize, -1, kernel)
 
-# --- Endpoints ---
+def predict_image(file_stream):
+    try:
+        processed_image = ImagePreprocess1(file_stream)
+        processed_image = np.expand_dims(processed_image, axis=0)
+        predictions = food_model.predict(processed_image, verbose=0)[0]
+        prediction_index = np.argmax(predictions)
+        predicted_class = classes[prediction_index]
+        confidence = float(predictions[prediction_index])
+        all_probabilities = [float(prob) for prob in predictions]
+        return all_probabilities, predicted_class, confidence, None
+    except Exception as e:
+        return None, None, None, str(e)
+
+# ===========================
+# Endpoint API
+# ===========================
 @app.route('/', methods=['GET'])
 def health_check():
     return jsonify({
-        "status": "ML API Running (Fixed Credentials)",
-        "bucket": GCS_BUCKET_NAME,
-        "food_model_ready": food_model is not None,
-        "bmr_model_ready": bmr_model is not None
+        "status": "Running (Python 3.12)",
+        "models_ready": food_model is not None and bmr_model is not None
     })
 
 @app.route('/food', methods=['POST'])
-def predict_food():
-    if food_model is None:
-        return jsonify({'error': 'Food Model not ready. Check server logs.'}), 503
-
+def predict():
+    if food_model is None: return jsonify({'error': 'Food Model Failed to Load'}), 503
     if 'file' not in request.files: return jsonify({'error': 'No file uploaded'}), 400
 
+    file = request.files['file']
     try:
-        file = request.files['file']
-        processed_img = preprocess_image(BytesIO(file.read()))
-        img_batch = np.expand_dims(processed_img, axis=0)
-
-        predictions = food_model.predict(img_batch, verbose=0)[0]
-        idx = np.argmax(predictions)
-        confidence = float(predictions[idx])
+        file_stream = BytesIO(file.read())
+        probs, p_class, p_prob, error = predict_image(file_stream)
         
-        if confidence < 0.65:
-            return jsonify({'message': 'Confidence too low (<65%)'}), 400
-
-        return jsonify({
-            'class': classes[idx],
-            'confidence': confidence,
-            'probabilities': [float(p) for p in predictions]
-        })
+        if error: return jsonify({'error': error}), 500
+        if p_class:
+            if p_prob < 0.65:
+                return jsonify({'message': 'Prediksi kurang dari 65% kepercayaan.'}), 400
+            return jsonify({
+                'all_probabilities': probs,
+                'predicted_class': p_class,
+                'predicted_prob': p_prob
+            })
     except Exception as e:
-        logger.error(f"Predict Food Error: {e}")
         return jsonify({'error': str(e)}), 500
 
 @app.route('/bmr', methods=['POST'])
 def predict_bmr():
-    if bmr_model is None:
-        return jsonify({'error': 'BMR Model not ready. Check server logs.'}), 503
+    if bmr_model is None: return jsonify({'error': 'BMR Model Failed to Load'}), 503
 
     data = request.get_json()
+    if not all(key in data for key in ['gender', 'height', 'weight', 'bmi']):
+        return jsonify({"error": "Data input tidak lengkap"}), 400
+
     try:
-        input_data = np.array([
-            int(data['gender']), float(data['height']), 
-            float(data['weight']), float(data['bmi'])
-        ]).reshape(1, -1)
-        
+        input_data = np.array([int(data['gender']), float(data['height']), float(data['weight']), float(data['bmi'])]).reshape(1, -1)
         preds = bmr_model.predict(input_data, verbose=0).flatten()
         return jsonify({
-            "prediction_index": int(np.argmax(preds)),
-            "probabilities": preds.tolist()
+            "input": data,
+            "prediction": {
+                "probabilities": preds.tolist(),
+                "predicted_index": int(np.argmax(preds))
+            }
         })
     except Exception as e:
-        logger.error(f"Predict BMR Error: {e}")
         return jsonify({'error': str(e)}), 500
 
 if __name__ == '__main__':

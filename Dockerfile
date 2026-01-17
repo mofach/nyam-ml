@@ -9,6 +9,7 @@ RUN apt-get update && apt-get install -y \
 
 WORKDIR /app
 
+ENV TF_USE_LEGACY_KERAS=1
 # Copy requirements & Install
 COPY requirements.txt .
 # Upgrade pip dulu biar aman

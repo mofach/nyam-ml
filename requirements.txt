@@ -1,7 +1,7 @@
-Flask
-numpy
+Flask==3.0.3
+gunicorn==22.0.0
+numpy==1.26.4
 opencv-python-headless
-tensorflow
+tensorflow-cpu==2.15.0
 google-cloud-storage
 python-dotenv
-gunicorn

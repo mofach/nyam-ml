@@ -1,18 +1,24 @@
-# Gunakan Python base image
-FROM python:3.12.7
+# Gunakan Python 3.10 (Paling stabil untuk TensorFlow 2.15)
+FROM python:3.10-slim
 
-# Atur working directory di dalam container
+# Install library OS wajib untuk OpenCV
+RUN apt-get update && apt-get install -y \
+  libgl1 \
+  libglib2.0-0 \
+  && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
 
-# Copy requirements file secara terpisah untuk caching
-COPY requirements.txt /app/
+# Copy requirements dan install
+COPY requirements.txt .
+RUN pip install --upgrade pip
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Salin semua file proyek ke container
-COPY . /app
+# Copy source code
+COPY . .
 
-# Expose port Flask
-EXPOSE 8080
+# Port Cloud Run
+ENV PORT=8080
 
-# Jalankan aplikasi dengan Gunicorn
-CMD ["gunicorn", "--workers=3", "--bind=0.0.0.0:8080", "app:app"]
+# Jalankan Gunicorn (Timeout 120s biar gak mati pas download model)
+CMD exec gunicorn --workers 3 --bind :$PORT --timeout 120 app:app

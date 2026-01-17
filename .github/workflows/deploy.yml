@@ -2,8 +2,7 @@ name: Deploy ML API
 
 on:
   push:
-    branches:
-      - main
+    branches: [main]
 
 env:
   PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
@@ -13,35 +12,27 @@ env:
 
 jobs:
   deploy:
-    name: Build & Deploy
     runs-on: ubuntu-latest
-
     permissions:
-      contents: "read"
-      id-token: "write"
+      contents: read
+      id-token: write
 
     steps:
-      - name: Checkout Code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Google Auth
-        uses: google-github-actions/auth@v2
+      - uses: google-github-actions/auth@v2
         with:
           credentials_json: "${{ secrets.GCP_CREDENTIALS }}"
 
-      - name: Set up Cloud SDK
-        uses: google-github-actions/setup-gcloud@v2
+      - uses: google-github-actions/setup-gcloud@v2
 
-      - name: Docker Auth
-        run: gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev
+      - run: gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev
 
-      - name: Build and Push
-        run: |
+      - run: |
           docker build -t ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPO_NAME }}/${{ env.SERVICE_NAME }}:${{ github.sha }} .
           docker push ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPO_NAME }}/${{ env.SERVICE_NAME }}:${{ github.sha }}
 
-      - name: Deploy to Cloud Run
-        uses: google-github-actions/deploy-cloudrun@v2
+      - uses: google-github-actions/deploy-cloudrun@v2
         with:
           service: ${{ env.SERVICE_NAME }}
           region: ${{ env.REGION }}
@@ -51,8 +42,6 @@ jobs:
             --memory=4Gi
             --cpu=2
             --timeout=300
-            --max-instances=10
-            --min-instances=0
           env_vars: |
             GCS_BUCKET_NAME=nyam-models-prod
             FOOD_MODEL_BLOB_NAME=modelML_foodRecognition.keras

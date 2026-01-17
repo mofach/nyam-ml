@@ -1,10 +1,4 @@
 Flask
-numpy
-python-dotenv
-google-generativeai
-tensorflow
-pillow
-opencv-pythonFlask
 gunicorn
 numpy
 python-dotenv

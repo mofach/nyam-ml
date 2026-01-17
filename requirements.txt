@@ -1,8 +1,7 @@
 Flask
-gunicorn
 numpy
 opencv-python-headless
 tensorflow
 google-cloud-storage
 python-dotenv
-tf-keras
+gunicorn

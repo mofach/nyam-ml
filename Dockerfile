@@ -1,26 +1,18 @@
-# Gunakan Python 3.12 (Sesuai referensi laptop kamu)
-FROM python:3.12-slim
+# Gunakan Python base image
+FROM python:3.12.7
 
-# Install library OS untuk OpenCV (Wajib ada di Linux server)
-RUN apt-get update && apt-get install -y \
-  libgl1 \
-  libglib2.0-0 \
-  && rm -rf /var/lib/apt/lists/*
-
+# Atur working directory di dalam container
 WORKDIR /app
 
-ENV TF_USE_LEGACY_KERAS=1
-# Copy requirements & Install
-COPY requirements.txt .
-# Upgrade pip dulu biar aman
-RUN pip install --upgrade pip
+# Copy requirements file secara terpisah untuk caching
+COPY requirements.txt /app/
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy Kodingan
-COPY . .
+# Salin semua file proyek ke container
+COPY . /app
 
-# Port
-ENV PORT=8080
+# Expose port Flask
+EXPOSE 8080
 
-# Jalankan (Sesuai referensi kamu, workers=3 oke)
-CMD exec gunicorn --workers 3 --bind :$PORT --timeout 120 app:app
+# Jalankan aplikasi dengan Gunicorn
+CMD ["gunicorn", "--workers=3", "--bind=0.0.0.0:8080", "app:app"]

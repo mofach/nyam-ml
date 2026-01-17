@@ -13,7 +13,8 @@ import warnings
 warnings.filterwarnings('ignore')
 
 import tensorflow as tf
-from tensorflow.keras.models import load_model
+import keras
+from keras.models import load_model
 from google.cloud import storage
 from dotenv import load_dotenv
 
@@ -55,6 +56,7 @@ def download_model_from_gcs(bucket_name, source_blob_name, destination_file_name
     """Download model dari GCS dengan retry mechanism"""
     if not bucket_name or not source_blob_name:
         logger.error("❌ Bucket name atau blob name tidak tersedia")
+        logger.error(f"   Bucket: {bucket_name}, Blob: {source_blob_name}")
         return False
     
     # Cek apakah file sudah ada
@@ -65,10 +67,15 @@ def download_model_from_gcs(bucket_name, source_blob_name, destination_file_name
     
     for attempt in range(max_retries):
         try:
-            logger.info(f"⬇️ Downloading {source_blob_name} (attempt {attempt + 1}/{max_retries})...")
+            logger.info(f"⬇️ Downloading gs://{bucket_name}/{source_blob_name} (attempt {attempt + 1}/{max_retries})...")
             storage_client = storage.Client()
             bucket = storage_client.bucket(bucket_name)
             blob = bucket.blob(source_blob_name)
+            
+            # Cek apakah blob exists
+            if not blob.exists():
+                logger.error(f"❌ File tidak ditemukan di GCS: gs://{bucket_name}/{source_blob_name}")
+                return False
             
             # Download
             blob.download_to_filename(destination_file_name)
@@ -83,7 +90,9 @@ def download_model_from_gcs(bucket_name, source_blob_name, destination_file_name
                 return False
                 
         except Exception as e:
-            logger.error(f"🔥 Error downloading {source_blob_name} (attempt {attempt + 1}): {e}")
+            logger.error(f"🔥 Error downloading {source_blob_name} (attempt {attempt + 1}): {type(e).__name__}: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
             if attempt == max_retries - 1:
                 return False
     
@@ -179,8 +188,27 @@ def predict_image(file_stream):
 # ===========================
 # Endpoint API
 # ===========================
-@app.route('/', methods=['GET'])
-def health_check():
+@app.route('/debug/logs', methods=['GET'])
+def debug_logs():
+    """Debug endpoint untuk cek status loading"""
+    return jsonify({
+        "models_loading": models_loading,
+        "models_ready": {
+            "food_model": food_model is not None,
+            "bmr_model": bmr_model is not None
+        },
+        "env_vars": {
+            "GCS_BUCKET_NAME": GCS_BUCKET_NAME,
+            "FOOD_MODEL_BLOB_NAME": FOOD_MODEL_BLOB_NAME,
+            "BMR_MODEL_BLOB_NAME": BMR_MODEL_BLOB_NAME
+        },
+        "paths": {
+            "food_model_path": LOCAL_FOOD_MODEL_PATH,
+            "bmr_model_path": LOCAL_BMR_MODEL_PATH,
+            "food_exists": os.path.exists(LOCAL_FOOD_MODEL_PATH),
+            "bmr_exists": os.path.exists(LOCAL_BMR_MODEL_PATH)
+        }
+    }), 200
     """Health check endpoint"""
     return jsonify({
         "status": "Running",

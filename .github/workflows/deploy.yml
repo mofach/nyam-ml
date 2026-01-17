@@ -1,48 +1,57 @@
-name: Deploy ML API
+name: Deploy to Cloud Run
 
 on:
   push:
-    branches: [main]
+    branches:
+      - main # Ubah jika branch utama kamu 'master'
 
 env:
   PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
-  REGION: asia-southeast2
-  REPO_NAME: nyam-repo
+  REGION: us-southeast2 # Ganti sesuai region kamu (misal: asia-southeast2 untuk Jakarta)
   SERVICE_NAME: nyam-ml-api
+  GCS_BUCKET: nyam-models-prod # GANTI INI
+  FOOD_MODEL: modelML_foodRecognition.keras
+  BMR_MODEL: modelML_bmiRate.keras
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      id-token: write
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout Code
+        uses: actions/checkout@v3
 
-      - uses: google-github-actions/auth@v2
+      # Authenticate to Google Cloud
+      - name: Google Auth
+        uses: google-github-actions/auth@v1
         with:
-          credentials_json: "${{ secrets.GCP_CREDENTIALS }}"
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
 
-      - uses: google-github-actions/setup-gcloud@v2
+      # Setup GCloud SDK
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v1
 
-      - run: gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev
+      # Configure Docker for Artifact Registry
+      - name: Configure Docker
+        run: gcloud auth configure-docker
 
-      - run: |
-          docker build -t ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPO_NAME }}/${{ env.SERVICE_NAME }}:${{ github.sha }} .
-          docker push ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPO_NAME }}/${{ env.SERVICE_NAME }}:${{ github.sha }}
+      # Build and Push Docker Image
+      - name: Build and Push
+        run: |
+          docker build -t gcr.io/$PROJECT_ID/$SERVICE_NAME:${{ github.sha }} .
+          docker push gcr.io/$PROJECT_ID/$SERVICE_NAME:${{ github.sha }}
 
-      - uses: google-github-actions/deploy-cloudrun@v2
+      # Deploy to Cloud Run
+      - name: Deploy to Cloud Run
+        uses: google-github-actions/deploy-cloudrun@v1
         with:
           service: ${{ env.SERVICE_NAME }}
+          image: gcr.io/${{ env.PROJECT_ID }}/${{ env.SERVICE_NAME }}:${{ github.sha }}
           region: ${{ env.REGION }}
-          image: ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPO_NAME }}/${{ env.SERVICE_NAME }}:${{ github.sha }}
-          flags: |
-            --allow-unauthenticated
-            --memory=4Gi
-            --cpu=2
-            --timeout=300
           env_vars: |
-            GCS_BUCKET_NAME=nyam-models-prod
-            FOOD_MODEL_BLOB_NAME=modelML_foodRecognition.keras
-            BMR_MODEL_BLOB_NAME=modelML_bmiRate.keras
+            GCS_BUCKET_NAME=${{ env.GCS_BUCKET }}
+            FOOD_MODEL_BLOB_NAME=${{ env.FOOD_MODEL }}
+            BMR_MODEL_BLOB_NAME=${{ env.BMR_MODEL }}
+            GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }}
+            TF_ENABLE_ONEDNN_OPTS=0
+          flags: "--memory=2Gi --cpu=1" # TensorFlow butuh RAM lumayan

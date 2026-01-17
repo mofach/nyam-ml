@@ -5,6 +5,7 @@ from flask import Flask, request, jsonify
 from io import BytesIO
 import numpy as np
 import cv2
+import tensorflow as tf
 from tensorflow.keras.models import load_model
 from google.cloud import storage
 from dotenv import load_dotenv
@@ -23,7 +24,7 @@ BMR_MODEL_BLOB_NAME = os.getenv("BMR_MODEL_BLOB_NAME")
 # Inisialisasi Flask
 app = Flask(__name__)
 
-# Direktori Sementara
+# Direktori Sementara (Sesuai kode kamu)
 temp_dir = tempfile.gettempdir()
 LOCAL_FOOD_MODEL_PATH = os.path.join(temp_dir, 'modelML_foodRecognition.keras')
 LOCAL_BMR_MODEL_PATH = os.path.join(temp_dir, 'modelML_bmiRate.keras')
@@ -36,78 +37,86 @@ classes = [
     "cucumber", "paprika", "sapi", "tofu", "telur", "tempeh", "tomato", "udang", "carrot"
 ]
 
-def download_model(bucket_name, source_blob_name, destination_file_name):
-    """Helper: Download file dari GCS"""
+# --- FUNGSI BARU: Download & Load Cerdas ---
+def download_and_load_model(blob_name, local_path):
+    """Mencoba download model dari GCS dan load ke Memory"""
+    logger.info(f"⬇️ Mencoba download {blob_name} dari bucket {GCS_BUCKET_NAME}...")
     try:
         storage_client = storage.Client()
-        bucket = storage_client.bucket(bucket_name)
-        blob = bucket.blob(source_blob_name)
-        blob.download_to_filename(destination_file_name)
-        logger.info(f"✅ Model {source_blob_name} berhasil didownload ke {destination_file_name}")
+        bucket = storage_client.bucket(GCS_BUCKET_NAME)
+        blob = bucket.blob(blob_name)
+        
+        # Cek apakah file ada di GCS
+        if not blob.exists():
+            raise FileNotFoundError(f"❌ File {blob_name} TIDAK DITEMUKAN di bucket {GCS_BUCKET_NAME}")
+            
+        blob.download_to_filename(local_path)
+        logger.info(f"✅ Download sukses: {local_path}")
+        
+        model = load_model(local_path)
+        logger.info(f"🧠 Model {blob_name} berhasil dimuat ke Memory!")
+        return model
     except Exception as e:
-        logger.error(f"❌ Gagal download model {source_blob_name}: {e}")
+        logger.error(f"🔥 Gagal load model {blob_name}: {str(e)}")
+        # Lempar error agar bisa ditangkap endpoint
         raise e
 
-def initialize_models():
-    """Load model ke memori (Global)"""
-    global food_model, bmr_model
-    
-    # Download jika belum ada di temp (berguna buat local testing, di cloud run temp selalu kosong pas start)
-    if not os.path.exists(LOCAL_FOOD_MODEL_PATH):
-        download_model(GCS_BUCKET_NAME, FOOD_MODEL_BLOB_NAME, LOCAL_FOOD_MODEL_PATH)
-    
-    if not os.path.exists(LOCAL_BMR_MODEL_PATH):
-        download_model(GCS_BUCKET_NAME, BMR_MODEL_BLOB_NAME, LOCAL_BMR_MODEL_PATH)
+def get_food_model():
+    """Getter Food Model (Lazy Load)"""
+    global food_model
+    if food_model is None:
+        food_model = download_and_load_model(FOOD_MODEL_BLOB_NAME, LOCAL_FOOD_MODEL_PATH)
+    return food_model
 
-    logger.info("⏳ Memuat model ke TensorFlow...")
-    food_model = load_model(LOCAL_FOOD_MODEL_PATH)
-    bmr_model = load_model(LOCAL_BMR_MODEL_PATH)
-    logger.info("🚀 Semua model siap digunakan!")
-
-# --- Load Model saat Startup ---
-# Di Cloud Run, ini akan dijalankan saat container start (Cold Start)
-try:
-    initialize_models()
-except Exception as e:
-    logger.critical(f"FATAL: Gagal inisialisasi model. {e}")
-
-# --- Helper Functions ---
-def preprocess_image(file_stream):
-    file_stream.seek(0)
-    file_bytes = np.frombuffer(file_stream.read(), np.uint8)
-    image = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
-    
-    if image is None:
-        raise ValueError("File bukan gambar yang valid")
-
-    img_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-    img_resize = cv2.resize(img_rgb, (224, 224))
-    
-    # Sharpening
-    kernel = np.array([[0, -1, 0], [-1, 5, -1], [0, -1, 0]])
-    sharpened_image = cv2.filter2D(img_resize, -1, kernel)
-    
-    return sharpened_image
+def get_bmr_model():
+    """Getter BMR Model (Lazy Load)"""
+    global bmr_model
+    if bmr_model is None:
+        bmr_model = download_and_load_model(BMR_MODEL_BLOB_NAME, LOCAL_BMR_MODEL_PATH)
+    return bmr_model
 
 # --- Endpoints ---
 @app.route('/', methods=['GET'])
 def health_check():
-    return jsonify({"status": "ML API is running", "models_loaded": food_model is not None}), 200
+    return jsonify({
+        "status": "ML API is running",
+        "bucket": GCS_BUCKET_NAME,
+        "food_model_loaded": food_model is not None,
+        "bmr_model_loaded": bmr_model is not None
+    }), 200
 
 @app.route('/food', methods=['POST'])
 def predict_food():
+    # 1. Pastikan Model Siap
+    try:
+        model = get_food_model()
+    except Exception as e:
+        return jsonify({"error": f"Gagal memuat Model Makanan. Cek Logs/Izin GCS. Detail: {str(e)}"}), 503
+
+    # 2. Cek File
     if 'file' not in request.files:
         return jsonify({'error': 'No file uploaded'}), 400
 
     file = request.files['file']
     
     try:
-        # Preprocess
-        processed_img = preprocess_image(BytesIO(file.read()))
+        # 3. Preprocess (Logic kamu)
+        file_stream = BytesIO(file.read())
+        file_stream.seek(0)
+        file_bytes = np.frombuffer(file_stream.read(), np.uint8)
+        image = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
+        
+        if image is None: return jsonify({'error': 'File bukan gambar valid'}), 400
+
+        img_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        img_resize = cv2.resize(img_rgb, (224, 224))
+        kernel = np.array([[0, -1, 0], [-1, 5, -1], [0, -1, 0]])
+        processed_img = cv2.filter2D(img_resize, -1, kernel)
+        
         img_batch = np.expand_dims(processed_img, axis=0)
 
-        # Predict
-        predictions = food_model.predict(img_batch, verbose=0)[0]
+        # 4. Predict
+        predictions = model.predict(img_batch, verbose=0)[0]
         prediction_index = np.argmax(predictions)
         confidence = float(predictions[prediction_index])
         predicted_class = classes[prediction_index]
@@ -115,7 +124,7 @@ def predict_food():
         if confidence < 0.65:
             return jsonify({
                 'error': 'Confidence too low',
-                'message': 'Gambar tidak dikenali atau keyakinan < 65%. Coba ambil gambar lebih jelas.'
+                'message': 'Gambar tidak dikenali atau keyakinan < 65%.'
             }), 400
 
         return jsonify({
@@ -130,6 +139,12 @@ def predict_food():
 
 @app.route('/bmr', methods=['POST'])
 def predict_bmr_endpoint():
+    # 1. Pastikan Model Siap
+    try:
+        model = get_bmr_model()
+    except Exception as e:
+        return jsonify({"error": f"Gagal memuat Model BMR. Cek Logs/Izin GCS. Detail: {str(e)}"}), 503
+
     data = request.get_json()
     required = ['gender', 'height', 'weight', 'bmi']
     
@@ -137,17 +152,14 @@ def predict_bmr_endpoint():
         return jsonify({"error": f"Input harus lengkap: {required}"}), 400
 
     try:
-        # PENTING: Gunakan Float untuk BMI agar presisi
         gender = int(data['gender'])
-        height = float(data['height']) # Bisa koma
-        weight = float(data['weight']) # Bisa koma
-        bmi = float(data['bmi'])       # Wajib Float
+        height = float(data['height'])
+        weight = float(data['weight'])
+        bmi = float(data['bmi'])
 
         input_data = np.array([gender, height, weight, bmi]).reshape(1, -1)
         
-        # Predict BMR
-        prediction = bmr_model.predict(input_data, verbose=0).flatten()
-        # Asumsi output model BMR kamu adalah klasifikasi (softmax) karena pakai argmax
+        prediction = model.predict(input_data, verbose=0).flatten()
         predicted_index = int(np.argmax(prediction))
 
         return jsonify({
@@ -161,5 +173,4 @@ def predict_bmr_endpoint():
         return jsonify({'error': str(e)}), 500
 
 if __name__ == '__main__':
-    # Ini hanya untuk testing lokal, production pakai Gunicorn
-    app.run(host='0.0.0.0', port=8080, debug=True)
+    app.run(host='0.0.0.0', port=8080)

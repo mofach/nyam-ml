@@ -1,9 +1,10 @@
-# Gunakan Python 3.12 Slim (Ringan)
+# Gunakan Python 3.12 Slim
 FROM python:3.12-slim
 
-# Install library sistem untuk OpenCV (libgl1)
+# Install library sistem
+# PERBAIKAN: Ganti libgl1-mesa-glx jadi libgl1
 RUN apt-get update && apt-get install -y \
-  libgl1-mesa-glx \
+  libgl1 \
   libglib2.0-0 \
   && rm -rf /var/lib/apt/lists/*
 

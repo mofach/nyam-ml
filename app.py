@@ -21,13 +21,12 @@ load_dotenv()
 app = Flask(__name__)
 
 # --- KONFIGURASI ENV ---
-# Nama Bucket & File di GCS
 GCS_BUCKET_NAME = os.getenv("GCS_BUCKET_NAME")
 FOOD_MODEL_BLOB = os.getenv("FOOD_MODEL_BLOB_NAME", "food_model_fixed.h5")
 BMR_MODEL_BLOB = os.getenv("BMR_MODEL_BLOB_NAME", "modelML_bmiRate.keras")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
-# Lokasi simpan sementara di dalam Container (karena Container itu Read-Only kecuali /tmp)
+# Lokasi simpan sementara
 TEMP_DIR = tempfile.gettempdir()
 LOCAL_FOOD_PATH = os.path.join(TEMP_DIR, FOOD_MODEL_BLOB)
 LOCAL_BMR_PATH = os.path.join(TEMP_DIR, BMR_MODEL_BLOB)
@@ -35,13 +34,15 @@ LOCAL_BMR_PATH = os.path.join(TEMP_DIR, BMR_MODEL_BLOB)
 # Konfigurasi Gemini
 if GEMINI_API_KEY:
     genai.configure(api_key=GEMINI_API_KEY)
-    gemini_model = genai.GenerativeModel('gemini-2.5-flash') # Sesuaikan versi
+    gemini_model = genai.GenerativeModel('gemini-2.5-flash')
 else:
     logger.warning("⚠️ GEMINI_API_KEY tidak ditemukan!")
 
+# 1. LIST MAKANAN DIUBAH KE BAHASA INGGRIS
+# Urutan harus tetap sama dengan training model lokal agar index-nya cocok.
 classes_list = [
-    "ayam", "broccoli", "ikan", "kambing", "cauliflower", "potato", "cabbage", "pumpkin", 
-    "cucumber", "paprika", "sapi", "tofu", "telur", "tempeh", "tomato", "udang", "carrot"
+    "chicken", "broccoli", "fish", "goat", "cauliflower", "potato", "cabbage", "pumpkin", 
+    "cucumber", "paprika", "beef", "tofu", "egg", "tempeh", "tomato", "shrimp", "carrot"
 ]
 classes_str = ", ".join(classes_list)
 
@@ -50,7 +51,6 @@ bmr_model = None
 
 # --- FUNGSI DOWNLOAD DARI GCS ---
 def download_model(bucket_name, source_blob_name, destination_file_name):
-    """Download model dari GCS jika belum ada di lokal"""
     if os.path.exists(destination_file_name):
         logger.info(f"📂 Model {source_blob_name} sudah ada di cache.")
         return True
@@ -71,12 +71,10 @@ def download_model(bucket_name, source_blob_name, destination_file_name):
 def initialize_models():
     global food_model, bmr_model
     
-    # Cek apakah environment variabel GCS diset
     if not GCS_BUCKET_NAME:
         logger.error("❌ GCS_BUCKET_NAME belum diset!")
         return
 
-    # 1. Download & Load Food Model
     if download_model(GCS_BUCKET_NAME, FOOD_MODEL_BLOB, LOCAL_FOOD_PATH):
         try:
             food_model = load_model(LOCAL_FOOD_PATH, compile=False)
@@ -84,7 +82,6 @@ def initialize_models():
         except Exception as e:
             logger.error(f"💀 Food Model Corrupt/Error: {e}")
 
-    # 2. Download & Load BMR Model
     if download_model(GCS_BUCKET_NAME, BMR_MODEL_BLOB, LOCAL_BMR_PATH):
         try:
             bmr_model = load_model(LOCAL_BMR_PATH, compile=False)
@@ -92,11 +89,10 @@ def initialize_models():
         except Exception as e:
             logger.error(f"💀 BMR Model Corrupt/Error: {e}")
 
-# Jalankan inisialisasi
 with app.app_context():
     initialize_models()
 
-# --- LOGIC HYBRID (Sama seperti sebelumnya) ---
+# --- LOGIC HYBRID ---
 def predict_local(file_stream):
     try:
         file_stream.seek(0)
@@ -109,6 +105,7 @@ def predict_local(file_stream):
         img_batch = np.expand_dims(img_processed, axis=0)
         preds = food_model.predict(img_batch, verbose=0)[0]
         idx = np.argmax(preds)
+        # Mengembalikan nama kelas dalam bahasa Inggris sesuai classes_list baru
         return classes_list[idx], float(preds[idx])
     except Exception as e:
         logger.error(f"Local Error: {e}")
@@ -118,14 +115,37 @@ def predict_gemini(file_stream):
     try:
         file_stream.seek(0)
         img = Image.open(file_stream)
-        prompt = f"Identifikasi makanan ini. Pilih satu dari: [{classes_str}]. Jika tidak ada, jawab 'unknown'."
-        response = gemini_model.generate_content([prompt, img])
-        result = response.text.strip().lower()
         
-        if result in classes_list: return result, 0.95
+        # 2. LOGIKA GEMINI DIPERBARUI
+        # Prompt: Identifikasi makanan dalam bahasa Inggris. 
+        # Jika bukan makanan, jawab 'not_food'.
+        prompt = (
+            "Identify the main item in this image. "
+            "If it is food, reply with its specific name in English (short name, max 2-3 words). "
+            "If it is NOT food, reply exactly with 'not_food'. "
+            "Do not provide recipes, just the name."
+        )
+        
+        response = gemini_model.generate_content([prompt, img])
+        result = response.text.strip().lower().replace(".", "")
+        
+        # Filter jika bukan makanan
+        if result == "not_food" or "not_food" in result:
+            return None, 0.0
+            
+        # Cek apakah hasil ada di list prioritas kita
+        if result in classes_list: 
+            return result, 0.95
+            
+        # Cek partial match (misal: "fried chicken" -> "chicken")
         for c in classes_list:
-            if c in result: return c, 0.90
-        return None, 0.0
+            if c in result: 
+                return c, 0.90
+        
+        # Jika makanan valid TAPI tidak ada di list, tetap kembalikan namanya (English)
+        # Confidence kita set manual ke 0.85
+        return result, 0.85
+        
     except Exception as e:
         logger.error(f"Gemini Error: {e}")
         return None, 0.0
@@ -149,16 +169,26 @@ def predict_food():
         logger.info(f"🤖 Local: {p_class} ({p_conf:.2f})")
 
     # 2. Fallback Gemini
+    # Masuk sini jika model lokal gagal, conf rendah, ATAU hasilnya 'unknown'
     if p_class is None or p_conf < 0.65:
         if GEMINI_API_KEY:
             logger.info("👉 Switch ke Gemini...")
             g_class, g_conf = predict_gemini(file_stream)
+            
+            # g_class hanya akan berisi string jika itu makanan (di list atau di luar list)
             if g_class:
                 p_class, p_conf = g_class, g_conf
                 logger.info(f"✨ Gemini: {p_class}")
+            else:
+                # Jika Gemini bilang None (berarti not_food), kita reset p_class jadi None
+                # agar masuk ke return 400 di bawah
+                p_class = None 
 
+    # 3. Struktur Respon Tetap
     if p_class:
         return jsonify({'predicted_class': p_class, 'predicted_prob': p_conf})
+    
+    # Jika lokal gagal dan Gemini bilang "not_food" (None), masuk ke sini
     return jsonify({'message': 'Makanan tidak dikenali.'}), 400
 
 @app.route('/bmr', methods=['POST'])

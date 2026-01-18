@@ -34,7 +34,7 @@ LOCAL_BMR_PATH = os.path.join(TEMP_DIR, BMR_MODEL_BLOB)
 # Konfigurasi Gemini
 if GEMINI_API_KEY:
     genai.configure(api_key=GEMINI_API_KEY)
-    gemini_model = genai.GenerativeModel('gemini-2.5-flash')
+    gemini_model = genai.GenerativeModel('gemini-2.5-flash-lite')
 else:
     logger.warning("⚠️ GEMINI_API_KEY tidak ditemukan!")
 
